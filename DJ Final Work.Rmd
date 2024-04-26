@@ -1,0 +1,361 @@
+---
+title: 'Milestone #4'
+author: "John Varellas, Kiana Parkins, Daniel Santos"
+date: "2023-11-09"
+output: html_document
+---
+
+```{r load libraries and csv, include=FALSE}
+#| echo: false
+#| output: false
+# load data and libraries
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(lubridate)
+library(ggrepel)
+library(plotly)
+# install.packages("DT")
+library(DT)
+vax_data <- read.csv("ca_vax_rates_quarter.csv")
+all_CA <- read.csv("sim_flu_CA.csv")
+LA_only <- read.csv("sim_flu_LACounty.csv")
+
+```
+
+
+```{r colnames to snakecase, include=FALSE}
+#| echo: false
+#| output: false
+colnames(all_CA)
+#check colnames of all_CA, no changes needed all in snakecase
+
+LA_only_clean <- rename_with(LA_only,             
+  ~ tolower(           
+    gsub(" ",          
+         "_",   
+         .x,           
+         fixed = TRUE) 
+    ))
+#change LA_only colnames to snakecase
+
+colnames(LA_only_clean)
+
+LA_only_clean <- LA_only_clean %>% rename(race_ethnicity = race_eth, cumulative_severe = severe_cumulative, current_infected = infected_current, cumulative_infected = infected_cumulative, cumulative_recovered = recovered_cumulative, new_recovered = recovered_new, new_severe = severe_new, new_infections = dx_new, age_cat = age_category, dt_diagnosis = dt_dx, count_susceptible = susceptible, report_date = dt_report, age_cat = age_category)
+#renaming LA_only_clean columns to match corresponding all_CA columns 
+
+LA_only_clean <- LA_only_clean %>% mutate(dt_diagnosis = dmy(dt_diagnosis))
+#convert dates to dmy format to correspond with all_CA
+
+all_CA_select <- all_CA %>% select(-time_int, -cumulative_unrecovered, -pop, -new_unrecovered)
+#select only columns that overlap between data sets 
+
+colnames(all_CA_select)
+colnames(LA_only_clean)
+
+LA_only_clean <- LA_only_clean %>% mutate(county = "Los Angeles County")
+#adding county column
+merged_CA <- rbind(all_CA_select, LA_only_clean)
+#merging data sets 
+
+flu_rates_df <- merged_CA %>% group_by(county, age_cat) %>% summarise(new_infections = sum(new_infections), count_susceptible = sum(count_susceptible), new_severe = sum(new_severe),count_susceptible = sum(count_susceptible)) %>% mutate(flu_rate = (new_infections/count_susceptible) * 100) %>% mutate(rate_severity = (new_severe/count_susceptible) * 100)
+#new df for flu rate and flu severity rate per 100 pop 
+head(flu_rates_df)
+
+sum(is.na(merged_CA$county))
+sum(is.na(merged_CA$new_infections))
+sum(is.na(merged_CA$new_severe))
+sum(is.na(merged_CA$count_susceptible))
+sum(is.na(merged_CA$rate))
+
+ flu_rates_df$county <- gsub("County", "", flu_rates_df$county)
+#checking for missing values 
+```
+
+\newpage
+
+```{r vax data, include=FALSE}
+#| output: false
+vax_data_rename <- rename_with(vax_data,
+                                ~ tolower(           
+    gsub(".",          
+         "_",   
+         .x,           
+         fixed = TRUE) 
+    ))
+vax_data_clean <- na.omit(vax_data_rename)
+#rename vax data columns and remove NAs
+
+vax_rates <- vax_data_clean %>%
+  group_by(county_name) %>%
+  filter(dt_admin == "2023-08-26") %>%
+  summarise(total_pop = sum(estimated_population), total_full_vax = sum(cumulative_fully_vaccinated), total_unvax = sum(cumulative_unvaccinated))
+#new variable 
+
+vax_rates
+vax_rates <- vax_rates %>% filter(county_name != "Statewide")
+
+vax_rates_demographic_value <- vax_data_clean %>%
+  group_by(county_name, demographic_value) %>%
+  filter(dt_admin == "2023-08-26") %>%
+  summarise(total_pop = sum(estimated_population), total_full_vax = 
+              sum(cumulative_fully_vaccinated), total_unvax = sum(cumulative_unvaccinated)) 
+#new variable in event demographics needed for future milestones
+
+vax_rates_demographic_value
+
+#cleaning vax_rates_demographic_value to include overlapping demographic values between this data set and merged_CA for future milestones
+
+unique(vax_rates_demographic_value$demographic_value)
+#checking unique values within demographic_value column
+
+vax_rates_demographic_value2 <- vax_rates_demographic_value %>% filter(demographic_value %in% c("Under 5","12-17", "18-49", "5-11", "50-64", "65+"))
+#filtering for overlapping demographic variables between data sets 
+
+vax_rates_demographic_value2 <- vax_rates_demographic_value2 %>% mutate(age_cat = case_when(
+  demographic_value == "Under 5" ~ "Under 5",
+  demographic_value == "5-11" ~ "5-11",
+  demographic_value == "12-17" ~ "12-17",
+  demographic_value == "18-49" ~ "18-49",
+  demographic_value == "50-64" ~ "50-64",
+  demographic_value == "65+" ~ "65+"
+)) 
+#creating age_cat columns to match merged_CA
+
+vax_rates_demographic_value2 <- select(vax_rates_demographic_value2, -demographic_value)
+#remove demographic_value column
+
+unique(vax_rates_demographic_value2$age_cat)
+unique(merged_CA$age_cat)
+#checking for overlapping values between data sets
+
+vax_rates_demographic_value2 <- vax_rates_demographic_value2 %>% mutate(age_cat = ifelse(age_cat == "Under 5" | age_cat == "5-11" | age_cat == "12-17", "0-17", age_cat)) %>% group_by(county_name, age_cat) %>% summarize(across(.fns = sum)) 
+
+vax_rates_demographic_value2 <- vax_rates_demographic_value2 %>% rename(county = county_name)
+
+vax_rates_demographic_value2 <- vax_rates_demographic_value2 %>% 
+  mutate(vax_rate =(total_full_vax / total_pop) * 100)
+
+missing_row_df <- data.frame(
+  "county" = "Alpine",
+  "age_cat" = "0-17",
+  "total_pop" = NA,
+  "total_full_vax" = NA,
+  "total_unvax" = NA,
+  "vax_rate" = NA
+)
+missing_row_df2 <- data.frame(
+  "county" = "Sierra",
+  "age_cat" = "0-17",
+  "total_pop" = NA,
+  "total_full_vax" = NA,
+  "total_unvax" = NA,
+  "vax_rate" = NA
+)
+
+vax_rates_demographic_value3 <- rbind(vax_rates_demographic_value2, missing_row_df)
+
+vax_rates3 <- rbind(vax_rates_demographic_value3, missing_row_df2)
+
+vax_rates3 <- vax_rates3 %>%
+  filter(!county == "Statewide")
+
+
+#combine age_cat values into 0-17
+
+```
+
+\newpage
+
+```{r table 1, include=FALSE}
+#| echo: false
+
+kable(flu_rates_df,longtable=T,booktabs=T, format.args=list(big.mark=","), digits=3, align = 'lcccccr', col.names = c("County", "Age Category", "Number of New Infections", "Number of Individuals Susceptible", "New Severe Infections", "Rate of New Infections per 100 Persons", "Rate of Severe Infections Per 100 Persons"), caption = "Flu Rates By County in California") %>%
+  kable_styling(full_width=F) %>%
+  kable_styling(position="left") %>%
+  kable_styling(font_size=10) %>%
+  column_spec(1, bold=TRUE) %>%
+  column_spec(1:2, width="3cm")
+#table of flu rates per county 
+```
+
+```{r table 2, include=FALSE}
+#| echo: false
+kable(vax_rates_demographic_value2,longtable=T,booktabs=T, format.args=list(big.mark=","), digits=2, align = 'lccccr', col.names = c("County", "Age Category", "Total Population", "Total Vaccinated", "Total Unvaccinated", "Vaccination Rate per 100 Persons"), caption = "Covid Vaccination Rates By County in California") %>%
+  kable_styling(full_width=F) %>%
+  kable_styling(position="left") %>%
+  kable_styling(font_size=10) %>%
+  column_spec(1, bold=TRUE) %>%
+  column_spec(1:2, width="3cm")
+#table of covid vaccination rates per county 
+```
+
+### Merging Datasets
+
+```{r Merge Datasets, echo = TRUE}
+#removing whitespace
+vax_rates3$county <- str_trim(vax_rates3$county)
+flu_rates_df$county <- str_trim(flu_rates_df$county)
+#joining two data sets by county and age category
+joined_data <- inner_join(vax_rates3, flu_rates_df, by = c("county", "age_cat"))
+#mutating flu infection rate to new_infections over total population to match covid infection rates
+joined_data2 <- joined_data %>%
+  mutate(flu_infection_rate = (new_infections / total_pop) *100)
+#selecting variables to include 
+joined_data3 <- joined_data2 %>%
+  select(c("county", "age_cat", "total_pop", "total_full_vax", "vax_rate", "new_infections", "flu_infection_rate"))
+#renaming columns 
+joined_data3 <- joined_data3 %>%
+  rename(total_covid_vax = total_full_vax, covid_vax_rate = vax_rate, cumulative_flu_infections = new_infections) 
+```
+
+### Visualizations
+
+```{r Plots and Graphs, echo = TRUE, warning=FALSE, message=FALSE}
+#reoving outliers and rounding rates
+joined_data4 <- joined_data3 %>%
+  filter(flu_infection_rate < 100) %>%
+  mutate(flu_infection_rate = round(flu_infection_rate, 2),
+         covid_vax_rate = round(covid_vax_rate, 2))
+
+#Graph 1: scatterplot of counties comparing flu infection rate vs covid vax rate 
+plot4 <- ggplot(joined_data4, mapping = aes(x = covid_vax_rate, y = flu_infection_rate, label = county)) + geom_point(aes(color = county), size = 1) + 
+  geom_smooth() +
+  labs(title = "COVID-19 Vaccination Rates vs. Flu Infection Rates", subtitle = "All Counties in California", 
+       x = "COVID Vaccination Rate (%)", 
+       y = "Flu Infection Rate (%)", color = "County") +
+  theme(legend.position = "none") 
+plot5 <- ggplotly(plot4, tooltip = "text" ) %>% layout(showlegend = TRUE)
+plot5
+
+```
+Graph 1: Shows the COVID Vaccination Rate by Flu Infection Rate per county. The graph does suggest a correlation between higher vaccination rates and lower flu infection rates. 
+
+\newpage
+```{r Plots and Graphs1, echo = T, warning = F, message = F}
+
+#Graph 2: catterplot of age categories comparing flu infection rate vs covid vax rate 
+ggplot(joined_data4, mapping = aes(x = covid_vax_rate, y = flu_infection_rate)) + 
+  geom_point(aes(color = age_cat)) + 
+  geom_smooth() +
+  labs(title = "COVID-19 Vaccination Rates vs. Flu Infection Rate by Age", subtitle = "All Counties in California", 
+       x = "COVID Vaccination Rate (%)", 
+       y = "Flu Infection Rate (%)", color = "Age Category") 
+
+
+```
+Graph 2: This graphic shows the COVID vaccination rates by Flu infection rates per the four different age categories within each county. 18+ year olds tended to have higher COVID vaccination rates compared to the 0-17 age group, and the 0-17 age group experienced the highest flu infection rates with the lowest vaccination rates. In general, as age category increases so does the tendency to have higher COVID vax rate and a lower flu infection rate.
+
+\newpage
+```{r Plots and Graphs2, echo = T, warning = F, message = F}
+
+#creating new df and summarizing data 
+county_data <- joined_data3 %>%
+  group_by(county) %>%
+  summarize(total_pop = sum(total_pop, na.rm = T),
+            total_covid_vax = sum(total_covid_vax, na.rm = T),
+            cumulative_flu_infections = sum(cumulative_flu_infections, na.rm = T))
+#adding rates 
+county_data2 <- county_data %>%
+  mutate(flu_infection_rate = (cumulative_flu_infections / total_pop) *100,
+         covid_vaccination_rate = (total_covid_vax / total_pop) * 100)
+#Graph 3: plot of covid vax rates vs flu infection rate by county
+scatterplot1 <- ggplot(county_data2, mapping = aes(x = covid_vaccination_rate, y = flu_infection_rate)) + 
+  geom_point() + 
+  geom_smooth() +
+  geom_label(label = county_data2$county) +
+  labs(title = "Flu Infection Rate by COVID-19 Vaccination Rate per County", 
+       x = "COVID Vaccination Rate (%) ",
+       y = "Flu Infection Rate (%) ")
+scatterplot1
+
+
+```
+Figure 3: This scatterplot depicts COVID Vaccination rates by Flu infection rates across all California counties. It shows a correlation between higher covid vaccination rates and lower flu infection rates.
+
+\newpage
+
+### Table of Covid Vaccination Rates vs. Flu Rates by County in California
+
+```{r Table of Merged Data, echo = TRUE}
+#| echo: false
+#arranging data by county and age category for table 
+joined_data5 <- joined_data3 %>% arrange(county, age_cat) %>%
+  mutate(flu_infection_rate = round(flu_infection_rate, 2),
+         covid_vax_rate = round(covid_vax_rate, 2))
+joined_data6 <- joined_data5 %>% 
+  group_by(county) %>%
+  summarize(
+    avg_flu_inf_rate = mean(flu_infection_rate, na.rm = TRUE),
+    avg_covid_vax_rate = mean(covid_vax_rate, na.rm = TRUE)
+  )
+
+plot1 <- ggplot(joined_data6, mapping = aes(x = county, y = avg_flu_inf_rate)) +
+                  geom_bar(stat = "identity")
+plot1
+
+plot2 <- ggplot(joined_data6, mapping = aes(x = county, y = avg_covid_vax_rate)) +
+  geom_bar(stat = "identity")
+
+plot2
+
+ggplot(joined_data6, aes(x = county)) +
+  geom_col(aes(y = avg_flu_inf_rate, fill = "Flu Infection Rate"), position = "dodge", width = 0.5) +
+  geom_col(aes(y = -avg_covid_vax_rate, fill = "COVID-19 Vaccination Rate"), position = "dodge", width = 0.5) +
+  labs(
+    title = "Average Flu Infection Rate and COVID-19 Vaccination Rate by County",
+    x = "County",
+    y = "Rate"
+  ) +
+  scale_fill_manual(values = c("Flu Infection Rate" = "blue", "COVID-19 Vaccination Rate" = "red")) +
+  theme_minimal()
+
+
+plot3 <- ggplot(joined_data6, aes(x = county)) +
+  geom_col(aes(y = avg_flu_inf_rate, fill = "Flu Infection Rate"), position = "dodge", width = 0.5) +
+  geom_col(aes(y = -avg_covid_vax_rate, fill = "COVID-19 Vaccination Rate"), position = "dodge", width = 0.5) +
+  geom_text(aes(y = avg_flu_inf_rate, label = sprintf("%.1f", avg_flu_inf_rate)),
+            position = position_dodge(width = 0.5), vjust = -0.5, size = 2.5) +
+  geom_text(aes(y = -avg_covid_vax_rate, label = sprintf("%.1f", avg_covid_vax_rate)),
+            position = position_dodge(width = 0.5), vjust = 1.5, size = 2.5) +
+  labs(
+    title = "Average Flu Infection Rate and COVID-19 Vaccination Rate by County",
+    x = "County",
+    y = "Rate"
+  ) +
+  scale_fill_manual(values = c("Flu Infection Rate" = "red", "COVID-19 Vaccination Rate" = "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(),  # Hide x-axis labels
+        axis.ticks.x = element_blank()) +
+  coord_flip()
+
+interactive_plot1 <- ggplotly(plot3, tooltip = "text" ) %>% layout(showlegend = TRUE)
+interactive_plot1
+
+
+```
+
+
+```{r}
+#Table 1: Reactable of Covid Vaccination Rates vs Flu Rates by County
+reactable1 <- datatable(
+  joined_data5,
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Blfrtip',
+    buttons = c('copy', 'csv', 'excel', 'pdf', 'print')
+  ), 
+  caption = "Covid Vaccination and Influenza Rates by County in California",
+  class = 'display nowrap compact', # Adjust styles as needed
+  filter = 'top', # Add filter boxes at the top of the table
+  rownames = FALSE,
+  colnames = c(
+    "County", "Age Category", "Total Population",
+    "Total Vaccinated Against Covid", "Covid Vaccination Rate per 100 Persons",
+    "Total Flu Infections", "Flu Infection Rate per 100 Persons"
+  ))
+reactable1
+```
+Table 1: This table includes all county data with age categories 0-17, 18-49, 50-64, and 65+. It includes the total population, COVID vaccination rates per 100 persons, the total flu infections, and flu infection rate per 100 persons. 
